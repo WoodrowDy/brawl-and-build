@@ -1,0 +1,101 @@
+flowchart TD
+    subgraph USER["👤 사용자"]
+        CHAT["Claude Desktop<br/>'회원가입 기능 토론해줘'"]
+    end
+
+    subgraph MCP["🔌 MCP Server (brawl-and-build)"]
+        direction TB
+        T1["🔧 init_project<br/>프로젝트 초기화"]
+        T2["🔧 discuss<br/>토론 실행"]
+        T3["🔧 build_code<br/>토론 + 코드 생성"]
+        T4["🔧 create_pr<br/>PR 생성"]
+        T5["🔧 get_project_status<br/>상태 조회"]
+    end
+
+    subgraph ENGINE["🥊 Brawl & Build Engine"]
+        direction TB
+
+        subgraph BRAWL["Phase 1: Brawl"]
+            direction TB
+            KICK["PM: 쟁점 제시"]
+            BE["BE 의견"] --> PM_BE["PM 정리"]
+            FE["FE 의견"] --> PM_FE["PM 정리"]
+            DES["Designer 의견"] --> PM_DES["PM 정리"]
+            WRAP["PM: 라운드 종합"]
+            KICK --> BE
+            PM_BE --> FE
+            PM_FE --> DES
+            PM_DES --> WRAP
+            WRAP -->|"반복"| KICK
+        end
+
+        SUM["Summarizer<br/>결정사항 · 미해결과제"]
+        WRAP -->|"완료"| SUM
+
+        subgraph BUILD_PHASE["Phase 2: Build"]
+            direction LR
+            SPEC["API Spec"] --> TYPES["Shared Types"]
+            TYPES --> BE_CODE["BE Code"] --> FE_CODE["FE Code"]
+        end
+
+        SUM --> BUILD_PHASE
+    end
+
+    subgraph TARGET["🎯 대상 프로젝트 repo"]
+        direction TB
+        CONFIG[".brawl.json"]
+        DOCS["docs/discussions/"]
+        PKGS["packages/<br/>backend · frontend · shared"]
+        GIT["git branch → commit → push"]
+        PR["GitHub PR<br/>토론 요약 = PR description"]
+        GIT --> PR
+    end
+
+    CHAT <-->|"MCP 프로토콜<br/>(stdio)"| MCP
+    T1 --> CONFIG
+    T2 --> ENGINE
+    T3 --> ENGINE
+    T5 --> CONFIG
+
+    CONFIG -.->|"설정 로드"| ENGINE
+    DOCS -.->|"이전 토론<br/>컨텍스트 주입"| KICK
+
+    BUILD_PHASE --> PKGS
+    SUM --> DOCS
+    T4 --> GIT
+
+    style USER fill:#1e1b4b,stroke:#6366f1,color:#e0e7ff
+    style CHAT fill:#4f46e5,stroke:#6366f1,color:#fff
+
+    style MCP fill:#1e293b,stroke:#475569,color:#e2e8f0
+    style T1 fill:#334155,stroke:#94a3b8,color:#e2e8f0
+    style T2 fill:#334155,stroke:#fbbf24,color:#fbbf24
+    style T3 fill:#334155,stroke:#60a5fa,color:#60a5fa
+    style T4 fill:#334155,stroke:#f472b6,color:#f472b6
+    style T5 fill:#334155,stroke:#94a3b8,color:#e2e8f0
+
+    style ENGINE fill:#0f172a,stroke:#334155,color:#e2e8f0
+    style BRAWL fill:#292524,stroke:#fbbf24,color:#fbbf24
+    style BUILD_PHASE fill:#172554,stroke:#60a5fa,color:#60a5fa
+
+    style KICK fill:#fbbf24,stroke:#d97706,color:#000
+    style BE fill:#60a5fa,stroke:#2563eb,color:#000
+    style FE fill:#a78bfa,stroke:#7c3aed,color:#000
+    style DES fill:#f472b6,stroke:#db2777,color:#000
+    style PM_BE fill:#fde68a,stroke:#d97706,color:#000
+    style PM_FE fill:#fde68a,stroke:#d97706,color:#000
+    style PM_DES fill:#fde68a,stroke:#d97706,color:#000
+    style WRAP fill:#fbbf24,stroke:#d97706,color:#000
+    style SUM fill:#2dd4bf,stroke:#0d9488,color:#000
+
+    style SPEC fill:#60a5fa,stroke:#2563eb,color:#000
+    style TYPES fill:#94a3b8,stroke:#64748b,color:#000
+    style BE_CODE fill:#60a5fa,stroke:#2563eb,color:#000
+    style FE_CODE fill:#a78bfa,stroke:#7c3aed,color:#000
+
+    style TARGET fill:#14291a,stroke:#4ade80,color:#4ade80
+    style CONFIG fill:#4ade80,stroke:#16a34a,color:#000
+    style DOCS fill:#4ade80,stroke:#16a34a,color:#000
+    style PKGS fill:#334155,stroke:#94a3b8,color:#e2e8f0
+    style GIT fill:#334155,stroke:#e2e8f0,color:#e2e8f0
+    style PR fill:#f472b6,stroke:#db2777,color:#000

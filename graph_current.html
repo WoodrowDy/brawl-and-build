@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brawl & Build - 토론 그래프</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0f172a; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+        canvas { display: block; }
+
+        #info {
+            position: fixed; top: 16px; left: 16px;
+            background: rgba(15,23,42,0.9); border: 1px solid #334155;
+            border-radius: 12px; padding: 16px; color: #e2e8f0;
+            max-width: 320px; font-size: 13px; line-height: 1.5;
+            backdrop-filter: blur(8px);
+        }
+        #info h2 { color: #fbbf24; font-size: 16px; margin-bottom: 8px; }
+        #info .stat { color: #94a3b8; }
+        #info .highlight { color: #4ade80; font-weight: bold; }
+
+        #controls {
+            position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 8px; background: rgba(15,23,42,0.9);
+            border: 1px solid #334155; border-radius: 12px; padding: 10px 16px;
+            backdrop-filter: blur(8px);
+        }
+        #controls button {
+            background: #1e293b; border: 1px solid #475569; color: #e2e8f0;
+            padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+            transition: all 0.2s;
+        }
+        #controls button:hover { background: #334155; border-color: #fbbf24; }
+        #controls button.active { background: #fbbf24; color: #0f172a; border-color: #fbbf24; }
+
+        #roundInfo {
+            position: fixed; top: 16px; right: 16px;
+            background: rgba(15,23,42,0.9); border: 1px solid #334155;
+            border-radius: 12px; padding: 16px; color: #e2e8f0;
+            font-size: 13px; backdrop-filter: blur(8px); text-align: right;
+        }
+        #roundInfo .round-label { color: #fbbf24; font-size: 20px; font-weight: bold; }
+        #roundInfo .api-count { color: #4ade80; font-size: 14px; }
+    </style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<div id="info">
+    <h2>🥊 Brawl & Build</h2>
+    <div>PM 허브형 토론 그래프</div>
+    <div class="stat" style="margin-top:8px;">
+        <div>기본 3라운드: <span class="highlight">25회 API 호출</span></div>
+        <div>2라운드: <span class="highlight">17회 API 호출</span></div>
+        <div>1라운드: <span class="highlight">9회 API 호출</span></div>
+    </div>
+    <div class="stat" style="margin-top:8px; font-size:11px; color:#64748b;">
+        라운드당: PM×4 + 멤버×3 + 요약×1
+    </div>
+</div>
+
+<div id="roundInfo">
+    <div class="round-label" id="roundLabel">라운드 1</div>
+    <div class="api-count" id="apiCount">API 호출: 0회</div>
+    <div style="color:#94a3b8; margin-top:4px;" id="currentNode">대기 중</div>
+</div>
+
+<div id="controls">
+    <button onclick="setRounds(1)">1라운드</button>
+    <button onclick="setRounds(2)" class="active">2라운드</button>
+    <button onclick="setRounds(3)">3라운드</button>
+    <button onclick="toggleAnimation()" id="animBtn">▶ 시뮬레이션</button>
+    <button onclick="resetAnimation()">↺ 리셋</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Node definitions
+const nodeTypes = {
+    start:    { color: '#4ade80', border: '#16a34a', textColor: '#000' },
+    end:      { color: '#f87171', border: '#dc2626', textColor: '#000' },
+    pm_main:  { color: '#fbbf24', border: '#d97706', textColor: '#000' },
+    pm_resp:  { color: '#fde68a', border: '#d97706', textColor: '#000' },
+    be:       { color: '#60a5fa', border: '#2563eb', textColor: '#000' },
+    fe:       { color: '#a78bfa', border: '#7c3aed', textColor: '#000' },
+    designer: { color: '#f472b6', border: '#db2777', textColor: '#000' },
+    system:   { color: '#94a3b8', border: '#64748b', textColor: '#000' },
+    summary:  { color: '#2dd4bf', border: '#0d9488', textColor: '#000' },
+};
+
+const nodes = [
+    { id: 'start',       label: 'START',            type: 'start',    x: 0, y: 0, w: 90, h: 40 },
+    { id: 'pm_kick',     label: 'PM: 쟁점 제시',     type: 'pm_main',  x: 0, y: 0, w: 130, h: 44 },
+    { id: 'be',          label: 'BE: 백엔드 의견',    type: 'be',       x: 0, y: 0, w: 140, h: 44 },
+    { id: 'pm_be',       label: 'PM → BE 응답',      type: 'pm_resp',  x: 0, y: 0, w: 130, h: 44 },
+    { id: 'fe',          label: 'FE: 프론트 의견',    type: 'fe',       x: 0, y: 0, w: 140, h: 44 },
+    { id: 'pm_fe',       label: 'PM → FE 응답',      type: 'pm_resp',  x: 0, y: 0, w: 130, h: 44 },
+    { id: 'designer',    label: 'Designer: UX 의견',  type: 'designer', x: 0, y: 0, w: 150, h: 44 },
+    { id: 'pm_designer', label: 'PM → Designer 응답', type: 'pm_resp',  x: 0, y: 0, w: 160, h: 44 },
+    { id: 'pm_wrap',     label: 'PM: 라운드 정리',    type: 'pm_main',  x: 0, y: 0, w: 140, h: 44 },
+    { id: 'inc_round',   label: '라운드 +1',          type: 'system',   x: 0, y: 0, w: 100, h: 40 },
+    { id: 'summarizer',  label: 'Summarizer',        type: 'summary',  x: 0, y: 0, w: 120, h: 44 },
+    { id: 'end',         label: 'END',               type: 'end',      x: 0, y: 0, w: 70, h: 40 },
+];
+
+const edges = [
+    { from: 'start',       to: 'pm_kick',     label: '' },
+    { from: 'pm_kick',     to: 'be',          label: '' },
+    { from: 'be',          to: 'pm_be',       label: '' },
+    { from: 'pm_be',       to: 'fe',          label: '' },
+    { from: 'fe',          to: 'pm_fe',       label: '' },
+    { from: 'pm_fe',       to: 'designer',    label: '' },
+    { from: 'designer',    to: 'pm_designer', label: '' },
+    { from: 'pm_designer', to: 'pm_wrap',     label: '' },
+    { from: 'pm_wrap',     to: 'inc_round',   label: '' },
+    { from: 'inc_round',   to: 'pm_kick',     label: 'round ≤ max', type: 'loop' },
+    { from: 'inc_round',   to: 'summarizer',  label: 'round > max', type: 'exit' },
+    { from: 'summarizer',  to: 'end',         label: '' },
+];
+
+// Layout nodes
+function layoutNodes() {
+    const cx = W / 2;
+    const startY = 60;
+    const gap = 58;
+
+    const flow = ['start','pm_kick','be','pm_be','fe','pm_fe','designer','pm_designer','pm_wrap','inc_round'];
+    flow.forEach((id, i) => {
+        const n = nodes.find(n => n.id === id);
+        n.x = cx;
+        n.y = startY + i * gap;
+    });
+
+    const sumNode = nodes.find(n => n.id === 'summarizer');
+    sumNode.x = cx + 200;
+    sumNode.y = startY + 9 * gap;
+
+    const endNode = nodes.find(n => n.id === 'end');
+    endNode.x = cx + 200;
+    endNode.y = startY + 10 * gap;
+}
+
+// Animation state
+let maxRounds = 2;
+let animating = false;
+let animStep = -1;
+let animTimer = null;
+let apiCallCount = 0;
+let currentRound = 1;
+let activeNodeId = null;
+let visitedEdges = [];
+let pulsePhase = 0;
+
+const stepSequence = [
+    'start', 'pm_kick', 'be', 'pm_be', 'fe', 'pm_fe', 'designer', 'pm_designer', 'pm_wrap', 'inc_round'
+];
+
+const apiNodes = new Set(['pm_kick','be','pm_be','fe','pm_fe','designer','pm_designer','pm_wrap','summarizer']);
+
+function setRounds(n) {
+    maxRounds = n;
+    resetAnimation();
+    document.querySelectorAll('#controls button').forEach(b => b.classList.remove('active'));
+    event.target.classList.add('active');
+}
+
+function toggleAnimation() {
+    if (animating) {
+        clearInterval(animTimer);
+        animating = false;
+        document.getElementById('animBtn').textContent = '▶ 시뮬레이션';
+    } else {
+        animating = true;
+        document.getElementById('animBtn').textContent = '⏸ 일시정지';
+        animTimer = setInterval(nextStep, 800);
+    }
+}
+
+function resetAnimation() {
+    clearInterval(animTimer);
+    animating = false;
+    animStep = -1;
+    apiCallCount = 0;
+    currentRound = 1;
+    activeNodeId = null;
+    visitedEdges = [];
+    document.getElementById('animBtn').textContent = '▶ 시뮬레이션';
+    document.getElementById('roundLabel').textContent = '라운드 1';
+    document.getElementById('apiCount').textContent = 'API 호출: 0회';
+    document.getElementById('currentNode').textContent = '대기 중';
+}
+
+function nextStep() {
+    animStep++;
+
+    // Build full sequence based on rounds
+    const fullSeq = [];
+    for (let r = 0; r < maxRounds; r++) {
+        fullSeq.push(...stepSequence);
+    }
+    fullSeq.push('summarizer', 'end');
+
+    if (animStep >= fullSeq.length) {
+        clearInterval(animTimer);
+        animating = false;
+        document.getElementById('animBtn').textContent = '▶ 시뮬레이션';
+        document.getElementById('currentNode').textContent = '✅ 토론 완료';
+        return;
+    }
+
+    const nodeId = fullSeq[animStep];
+    activeNodeId = nodeId;
+
+    if (nodeId === 'inc_round') {
+        currentRound++;
+    }
+
+    if (apiNodes.has(nodeId)) {
+        apiCallCount++;
+    }
+
+    // Track edge
+    if (animStep > 0) {
+        const prevId = fullSeq[animStep - 1];
+        visitedEdges.push({ from: prevId, to: nodeId });
+    }
+
+    const displayRound = Math.min(currentRound, maxRounds);
+    document.getElementById('roundLabel').textContent = `라운드 ${displayRound}`;
+    document.getElementById('apiCount').textContent = `API 호출: ${apiCallCount}회`;
+
+    const node = nodes.find(n => n.id === nodeId);
+    document.getElementById('currentNode').textContent = `▶ ${node.label}`;
+}
+
+// Drawing
+function getNode(id) { return nodes.find(n => n.id === id); }
+
+function drawRoundedRect(x, y, w, h, r, fill, stroke, lineWidth) {
+    ctx.beginPath();
+    ctx.roundRect(x - w/2, y - h/2, w, h, r);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = lineWidth || 2;
+    ctx.stroke();
+}
+
+function drawArrow(x1, y1, x2, y2, color, dashed) {
+    ctx.beginPath();
+    if (dashed) ctx.setLineDash([6, 4]);
+    else ctx.setLineDash([]);
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Arrowhead
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    const sz = 8;
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - sz * Math.cos(angle - 0.4), y2 - sz * Math.sin(angle - 0.4));
+    ctx.lineTo(x2 - sz * Math.cos(angle + 0.4), y2 - sz * Math.sin(angle + 0.4));
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+}
+
+function drawCurvedArrow(x1, y1, x2, y2, cx1, cy1, color, label) {
+    ctx.beginPath();
+    ctx.setLineDash([6, 4]);
+    ctx.moveTo(x1, y1);
+    ctx.quadraticCurveTo(cx1, cy1, x2, y2);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Arrowhead
+    const t = 0.95;
+    const dx = 2*(1-t)*(cx1-x1) + 2*t*(x2-cx1);
+    const dy = 2*(1-t)*(cy1-y1) + 2*t*(y2-cy1);
+    const angle = Math.atan2(dy, dx);
+    const sz = 8;
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - sz * Math.cos(angle - 0.4), y2 - sz * Math.sin(angle - 0.4));
+    ctx.lineTo(x2 - sz * Math.cos(angle + 0.4), y2 - sz * Math.sin(angle + 0.4));
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+
+    if (label) {
+        const mx = (1-0.5)*(1-0.5)*x1 + 2*(1-0.5)*0.5*cx1 + 0.5*0.5*x2;
+        const my = (1-0.5)*(1-0.5)*y1 + 2*(1-0.5)*0.5*cy1 + 0.5*0.5*y2;
+        ctx.font = '11px Segoe UI';
+        ctx.fillStyle = color;
+        ctx.textAlign = 'center';
+        ctx.fillText(label, mx, my - 6);
+    }
+}
+
+function isEdgeVisited(from, to) {
+    return visitedEdges.some(e => e.from === from && e.to === to);
+}
+
+function render() {
+    ctx.clearRect(0, 0, W, H);
+    layoutNodes();
+    pulsePhase += 0.05;
+
+    // Draw edges
+    edges.forEach(edge => {
+        const fromN = getNode(edge.from);
+        const toN = getNode(edge.to);
+        if (!fromN || !toN) return;
+
+        const visited = isEdgeVisited(edge.from, edge.to);
+
+        if (edge.type === 'loop') {
+            // Loop back arrow (curved left)
+            const color = visited ? '#4ade80' : '#475569';
+            drawCurvedArrow(
+                fromN.x - fromN.w/2, fromN.y,
+                toN.x - toN.w/2, toN.y,
+                fromN.x - 180, (fromN.y + toN.y) / 2,
+                color, edge.label
+            );
+        } else if (edge.type === 'exit') {
+            // Exit arrow (curved right)
+            const color = visited ? '#f87171' : '#475569';
+            drawCurvedArrow(
+                fromN.x + fromN.w/2, fromN.y,
+                toN.x, toN.y - toN.h/2,
+                fromN.x + 200, fromN.y,
+                color, edge.label
+            );
+        } else {
+            const color = visited ? '#4ade80' : '#334155';
+            drawArrow(fromN.x, fromN.y + fromN.h/2, toN.x, toN.y - toN.h/2, color);
+        }
+    });
+
+    // Draw nodes
+    nodes.forEach(node => {
+        const t = nodeTypes[node.type];
+        const isActive = node.id === activeNodeId;
+        const pulse = isActive ? Math.sin(pulsePhase) * 0.3 + 0.7 : 0;
+
+        if (isActive) {
+            // Glow effect
+            ctx.shadowColor = t.color;
+            ctx.shadowBlur = 20 + pulse * 15;
+            drawRoundedRect(node.x, node.y, node.w + 6, node.h + 6, 12, 'transparent', t.color, 3);
+            ctx.shadowBlur = 0;
+        }
+
+        const alpha = isActive ? 1 : (activeNodeId ? 0.5 : 0.85);
+        ctx.globalAlpha = alpha;
+        drawRoundedRect(node.x, node.y, node.w, node.h, 10, t.color, t.border, 2);
+
+        ctx.font = 'bold 12px Segoe UI';
+        ctx.fillStyle = t.textColor;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(node.label, node.x, node.y);
+        ctx.globalAlpha = 1;
+    });
+
+    // API call indicator
+    if (activeNodeId && apiNodes.has(activeNodeId)) {
+        const node = getNode(activeNodeId);
+        const blink = Math.sin(pulsePhase * 2) > 0;
+        if (blink) {
+            ctx.font = 'bold 11px Segoe UI';
+            ctx.fillStyle = '#4ade80';
+            ctx.textAlign = 'left';
+            ctx.fillText('⚡ API', node.x + node.w/2 + 8, node.y);
+        }
+    }
+
+    requestAnimationFrame(render);
+}
+
+render();
+</script>
+</body>
+</html>

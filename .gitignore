@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# 환경변수
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 토론 결과물 (실행 시 생성됨)
+output/
+!output/.gitkeep
+
+# 생성된 코드 (대상 프로젝트 repo에 저장)
+generated/
+
+# OS
+.DS_Store
+Thumbs.db

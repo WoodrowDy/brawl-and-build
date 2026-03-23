@@ -1,0 +1,37 @@
+---
+config:
+  flowchart:
+    curve: linear
+  theme: default
+---
+graph TD
+    START(["START"]) --> KICK["PM: 라운드 시작<br/>쟁점 제시 & 질문"]
+
+    KICK --> BE["BE: 백엔드 의견"]
+    BE --> PM_BE["PM → BE 응답<br/>정리 & 추가질문"]
+
+    PM_BE --> FE["FE: 프론트 의견"]
+    FE --> PM_FE["PM → FE 응답<br/>정리 & 추가질문"]
+
+    PM_FE --> DESIGN["Designer: UX/UI 의견"]
+    DESIGN --> PM_DESIGN["PM → Designer 응답<br/>정리 & 추가질문"]
+
+    PM_DESIGN --> WRAP["PM: 라운드 종합 정리"]
+    WRAP --> INC["라운드 +1"]
+
+    INC -->|"round <= max"| KICK
+    INC -->|"round > max"| SUM["Summarizer<br/>결정사항 / 미해결과제"]
+    SUM --> END_NODE(["END"])
+
+    style START fill:#4ade80,stroke:#16a34a,color:#000
+    style END_NODE fill:#f87171,stroke:#dc2626,color:#000
+    style KICK fill:#fbbf24,stroke:#d97706,color:#000
+    style WRAP fill:#fbbf24,stroke:#d97706,color:#000
+    style PM_BE fill:#fde68a,stroke:#d97706,color:#000
+    style PM_FE fill:#fde68a,stroke:#d97706,color:#000
+    style PM_DESIGN fill:#fde68a,stroke:#d97706,color:#000
+    style BE fill:#60a5fa,stroke:#2563eb,color:#000
+    style FE fill:#a78bfa,stroke:#7c3aed,color:#000
+    style DESIGN fill:#f472b6,stroke:#db2777,color:#000
+    style INC fill:#94a3b8,stroke:#64748b,color:#000
+    style SUM fill:#2dd4bf,stroke:#0d9488,color:#000

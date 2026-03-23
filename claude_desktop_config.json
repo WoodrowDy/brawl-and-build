@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "brawl-and-build": {
+      "command": "/Users/rowdy/Documents/since/brawl-and-build/venv/bin/python",
+      "args": [
+        "/Users/rowdy/Documents/since/brawl-and-build/mcp_server.py"
+      ],
+      "env": {
+        "ANTHROPIC_API_KEY": "sk-ant-your-key-here"
+      }
+    }
+  }
+}
