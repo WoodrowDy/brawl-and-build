@@ -12,7 +12,11 @@ Claude Desktop에서 대화로 토론을 시작하고,
 import sys
 import os
 import json
+import re
 import subprocess
+import threading
+import uuid
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -28,9 +32,48 @@ from core.project_config import (
     load_config, save_config, init_config,
     mark_feature_done, build_previous_context,
 )
-from core.code_generator import save_generated_code
+from core.code_generator import save_generated_code, scaffold_project
 
 mcp = FastMCP(name="brawl-and-build")
+
+
+# ══════════════════════════════════════════
+#  비동기 작업 관리
+# ══════════════════════════════════════════
+
+_tasks: dict[str, dict] = {}
+
+
+def _create_task(task_type: str, feature_name: str) -> str:
+    """새 작업을 생성하고 task_id를 반환합니다."""
+    task_id = str(uuid.uuid4())[:8]
+    _tasks[task_id] = {
+        "task_id": task_id,
+        "type": task_type,
+        "feature": feature_name,
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "finished_at": None,
+        "result": None,
+        "error": None,
+    }
+    return task_id
+
+
+def _finish_task(task_id: str, result: dict):
+    """작업을 완료 상태로 업데이트합니다."""
+    if task_id in _tasks:
+        _tasks[task_id]["status"] = "completed"
+        _tasks[task_id]["finished_at"] = datetime.now().isoformat()
+        _tasks[task_id]["result"] = result
+
+
+def _fail_task(task_id: str, error: str):
+    """작업을 실패 상태로 업데이트합니다."""
+    if task_id in _tasks:
+        _tasks[task_id]["status"] = "error"
+        _tasks[task_id]["finished_at"] = datetime.now().isoformat()
+        _tasks[task_id]["error"] = error
 
 
 # ══════════════════════════════════════════
@@ -47,10 +90,15 @@ def init_project(target_path: str, project_name: str) -> str:
     """
     target = os.path.abspath(target_path)
     config = init_config(target, project_name)
+
+    # 프로젝트 scaffold (nest new, create-vite) - 최초 1회만
+    scaffold_result = scaffold_project(target)
+
     return json.dumps({
         "status": "ok",
         "message": f"프로젝트 '{project_name}' 초기화 완료",
         "config_path": os.path.join(target, ".brawl.json"),
+        "scaffold": "created" if not scaffold_result.get("skipped") else "already_exists",
         "config": {
             "project": config.project,
             "stack": config.stack,
@@ -61,7 +109,7 @@ def init_project(target_path: str, project_name: str) -> str:
 
 
 # ══════════════════════════════════════════
-#  Tool 2: 토론 실행 (Brawl)
+#  Tool 2: 토론 실행 (Brawl) - async
 # ══════════════════════════════════════════
 
 @mcp.tool()
@@ -73,6 +121,8 @@ def discuss(
     rounds: int = 2,
 ) -> str:
     """PM, BE, FE, Designer 역할의 AI 에이전트들이 기능에 대해 토론합니다.
+
+    비동기로 실행됩니다. 반환된 task_id로 get_task_status를 호출하여 결과를 확인하세요.
 
     Args:
         feature_name: 토론할 기능 이름 (예: "회원가입")
@@ -94,44 +144,54 @@ def discuss(
     if not project_name:
         return json.dumps({"error": "project_name 또는 target_path(.brawl.json) 필요"})
 
-    with track_cost() as tracker:
-        final_state = run_discussion(
-            project_description=project_name,
-            feature_name=feature_name,
-            feature_description=feature_description,
-            max_rounds=rounds,
-            enable_build=False,
-            previous_context=previous_context,
-        )
+    task_id = _create_task("discuss", feature_name)
 
-    result = state_to_result(final_state)
+    def _run():
+        try:
+            with track_cost() as tracker:
+                final_state = run_discussion(
+                    project_description=project_name,
+                    feature_name=feature_name,
+                    feature_description=feature_description,
+                    max_rounds=rounds,
+                    enable_build=False,
+                    previous_context=previous_context,
+                )
 
-    # 파일 저장
-    output_dir = "output"
-    if target_path:
-        output_dir = os.path.join(os.path.abspath(target_path), "docs", "discussions")
+            result = state_to_result(final_state)
 
-    md_path = export_markdown(result, output_dir=output_dir)
-    json_path = export_json(result, output_dir=output_dir)
+            # 파일 저장
+            output_dir = "output"
+            if target_path:
+                output_dir = os.path.join(os.path.abspath(target_path), "docs", "discussions")
+
+            md_path = export_markdown(result, output_dir=output_dir)
+            json_path = export_json(result, output_dir=output_dir)
+
+            _finish_task(task_id, {
+                "feature": feature_name,
+                "decisions": result.decisions,
+                "unresolved": result.unresolved,
+                "summary": result.summary,
+                "total_rounds": result.total_rounds,
+                "files": {"markdown": md_path, "json": json_path},
+                "cost": tracker.to_dict(),
+            })
+        except Exception as e:
+            _fail_task(task_id, str(e))
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
 
     return json.dumps({
-        "status": "ok",
-        "feature": feature_name,
-        "decisions": result.decisions,
-        "unresolved": result.unresolved,
-        "summary": result.summary,
-        "total_rounds": result.total_rounds,
-        "discussion_log": [
-            {"role": m.role, "round": m.round, "content": m.content}
-            for m in result.discussion_log
-        ],
-        "files": {"markdown": md_path, "json": json_path},
-        "cost": tracker.to_dict(),
+        "status": "started",
+        "task_id": task_id,
+        "message": f"'{feature_name}' 토론이 시작되었습니다. get_task_status('{task_id}')로 진행 상황을 확인하세요.",
     }, ensure_ascii=False, indent=2)
 
 
 # ══════════════════════════════════════════
-#  Tool 3: 코드 생성 (Build)
+#  Tool 3: 코드 생성 (Build) - async
 # ══════════════════════════════════════════
 
 @mcp.tool()
@@ -145,6 +205,7 @@ def build_code(
     """토론 후 코드를 생성합니다 (Brawl + Build).
 
     NestJS 백엔드, React TS 프론트엔드, 공유 타입, API 명세를 생성합니다.
+    비동기로 실행됩니다. 반환된 task_id로 get_task_status를 호출하여 결과를 확인하세요.
 
     Args:
         feature_name: 기능 이름 (예: "회원가입")
@@ -164,45 +225,102 @@ def build_code(
     if not project_name:
         return json.dumps({"error": "project_name 또는 target_path(.brawl.json) 필요"})
 
-    with track_cost() as tracker:
-        final_state = run_discussion(
-            project_description=project_name,
-            feature_name=feature_name,
-            feature_description=feature_description,
-            max_rounds=rounds,
-            enable_build=True,
-            previous_context=previous_context,
-        )
+    task_id = _create_task("build_code", feature_name)
 
-    result = state_to_result(final_state)
+    def _run():
+        try:
+            with track_cost() as tracker:
+                final_state = run_discussion(
+                    project_description=project_name,
+                    feature_name=feature_name,
+                    feature_description=feature_description,
+                    max_rounds=rounds,
+                    enable_build=True,
+                    previous_context=previous_context,
+                )
 
-    # 코드 저장
-    code_dir = os.path.abspath(target_path) if target_path else "generated"
-    saved_files = save_generated_code(final_state, output_dir=code_dir)
+            result = state_to_result(final_state)
 
-    # 토론 기록 저장
-    docs_dir = os.path.join(code_dir, "docs", "discussions") if target_path else "output"
-    md_path = export_markdown(result, output_dir=docs_dir)
-    json_path = export_json(result, output_dir=docs_dir)
+            # 코드 저장
+            code_dir = os.path.abspath(target_path) if target_path else "generated"
+            saved_files = save_generated_code(final_state, output_dir=code_dir)
 
-    # .brawl.json 업데이트
-    if target_path:
-        mark_feature_done(os.path.abspath(target_path), feature_name)
+            # 토론 기록 저장
+            docs_dir = os.path.join(code_dir, "docs", "discussions") if target_path else "output"
+            md_path = export_markdown(result, output_dir=docs_dir)
+            json_path = export_json(result, output_dir=docs_dir)
+
+            # .brawl.json 업데이트
+            if target_path:
+                mark_feature_done(os.path.abspath(target_path), feature_name)
+
+            _finish_task(task_id, {
+                "feature": feature_name,
+                "decisions": result.decisions,
+                "unresolved": result.unresolved,
+                "summary": result.summary,
+                "generated_files": saved_files,
+                "discussion_files": {"markdown": md_path, "json": json_path},
+                "cost": tracker.to_dict(),
+            })
+        except Exception as e:
+            _fail_task(task_id, str(e))
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
 
     return json.dumps({
-        "status": "ok",
-        "feature": feature_name,
-        "decisions": result.decisions,
-        "unresolved": result.unresolved,
-        "summary": result.summary,
-        "generated_files": saved_files,
-        "discussion_files": {"markdown": md_path, "json": json_path},
-        "cost": tracker.to_dict(),
+        "status": "started",
+        "task_id": task_id,
+        "message": f"'{feature_name}' 토론 + 코드 생성이 시작되었습니다. get_task_status('{task_id}')로 진행 상황을 확인하세요.",
     }, ensure_ascii=False, indent=2)
 
 
 # ══════════════════════════════════════════
-#  Tool 4: PR 생성
+#  Tool 4: 작업 상태 조회 (NEW)
+# ══════════════════════════════════════════
+
+@mcp.tool()
+def get_task_status(task_id: str) -> str:
+    """비동기 작업(discuss, build_code)의 진행 상태를 확인합니다.
+
+    Args:
+        task_id: discuss 또는 build_code 호출 시 반환된 task_id
+    """
+    task = _tasks.get(task_id)
+
+    if not task:
+        return json.dumps({
+            "status": "not_found",
+            "message": f"task_id '{task_id}'를 찾을 수 없습니다.",
+            "available_tasks": [
+                {"task_id": t["task_id"], "type": t["type"], "feature": t["feature"], "status": t["status"]}
+                for t in _tasks.values()
+            ],
+        }, ensure_ascii=False, indent=2)
+
+    response = {
+        "task_id": task["task_id"],
+        "type": task["type"],
+        "feature": task["feature"],
+        "status": task["status"],
+        "started_at": task["started_at"],
+    }
+
+    if task["status"] == "running":
+        response["message"] = "아직 진행 중입니다. 잠시 후 다시 확인해주세요."
+    elif task["status"] == "completed":
+        response["finished_at"] = task["finished_at"]
+        response["result"] = task["result"]
+    elif task["status"] == "error":
+        response["finished_at"] = task["finished_at"]
+        response["error"] = task["error"]
+
+    return json.dumps(response, ensure_ascii=False, indent=2)
+
+
+# ══════════════════════════════════════════
+#  Tool 5: PR 생성
 # ══════════════════════════════════════════
 
 @mcp.tool()
@@ -223,10 +341,23 @@ def create_pr(
     # 토론 결과에서 PR description 로드
     pr_body = _load_pr_description(target, feature_name)
 
-    # 브랜치명 생성 (한글 → 영문 변환은 단순 치환)
-    branch_name = f"feature/{feature_name}"
+    # 브랜치명 생성 (비ASCII/특수문자 제거, 공백→하이픈)
+    slug = re.sub(r'[^a-zA-Z0-9\s-]', '', feature_name)
+    slug = re.sub(r'[\s]+', '-', slug).strip('-').lower()
+    if not slug:
+        slug = f"feature-{hash(feature_name) % 10000}"
+    branch_name = f"feature/{slug}"
 
     try:
+        # PATH에 homebrew, nvm 등 추가 (MCP 환경에서 누락될 수 있음)
+        env = os.environ.copy()
+        extra_paths = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            os.path.expanduser("~/.nvm/versions/node/v20.12.2/bin"),
+        ]
+        env["PATH"] = ":".join(extra_paths) + ":" + env.get("PATH", "")
+
         cmds = [
             ["git", "checkout", "-b", branch_name],
             ["git", "add", "."],
@@ -241,7 +372,7 @@ def create_pr(
         results = []
         for cmd in cmds:
             proc = subprocess.run(
-                cmd, cwd=target,
+                cmd, cwd=target, env=env,
                 capture_output=True, text=True, timeout=30,
             )
             results.append({
@@ -251,11 +382,15 @@ def create_pr(
                 "stderr": proc.stderr.strip(),
             })
 
+            # "nothing to commit"은 에러가 아님 → skip
             if proc.returncode != 0:
+                if "nothing to commit" in proc.stdout:
+                    results[-1]["skipped"] = True
+                    continue
                 return json.dumps({
                     "status": "error",
                     "step": " ".join(cmd),
-                    "error": proc.stderr.strip(),
+                    "error": proc.stderr.strip() or proc.stdout.strip(),
                     "completed_steps": results,
                 }, ensure_ascii=False, indent=2)
 
@@ -274,7 +409,7 @@ def create_pr(
 
 
 # ══════════════════════════════════════════
-#  Tool 5: 프로젝트 상태 조회
+#  Tool 6: 프로젝트 상태 조회
 # ══════════════════════════════════════════
 
 @mcp.tool()

@@ -13,6 +13,7 @@ load_dotenv()
 from core.graph import run_discussion
 from core.exporter import state_to_result, export_markdown, export_json
 from core.cost_tracker import track_cost
+from core.code_generator import scaffold_project
 from core.project_config import (
     load_config, save_config, init_config,
     mark_feature_done, build_previous_context, ProjectConfig,
@@ -32,7 +33,7 @@ def main():
     parser.add_argument(
         "--feature", "-f",
         type=str,
-        required=True,
+        default=None,
         help="토론할 기능 이름 (예: '회원가입')"
     )
     parser.add_argument(
@@ -92,6 +93,15 @@ def main():
             project_name = args.project or "My Project"
             config = init_config(target_dir, project_name)
             print(f"✅ .brawl.json 초기화 완료 → {target_dir}")
+
+            # 프로젝트 scaffold (nest new, create-vite) - 최초 1회
+            print("🏗️  프로젝트 scaffold 생성 중...")
+            scaffold_result = scaffold_project(target_dir)
+            if scaffold_result.get("skipped"):
+                print("⏭️  이미 scaffold가 존재합니다. 건너뜁니다.")
+            else:
+                print("✅ scaffold 생성 완료 (NestJS + React + Shared)")
+
             if not args.feature:
                 return
 
@@ -101,6 +111,13 @@ def main():
             previous_context = build_previous_context(target_dir)
             if previous_context:
                 print(f"🔗 이전 토론 {len(config.features_done)}건 컨텍스트 연결")
+
+    # --init만 실행한 경우 여기서 종료
+    if not args.feature:
+        if not args.init:
+            print("❌ --feature 옵션이 필요합니다. (예: --feature '회원가입')")
+            sys.exit(1)
+        return
 
     # CLI 인자 > 설정 파일 > 기본값
     project_name = args.project or (config.project if config else None)
