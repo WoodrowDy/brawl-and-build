@@ -336,7 +336,18 @@ def create_pr(
         target_path: 대상 프로젝트 경로
         base_branch: 베이스 브랜치 (기본: main)
     """
+    import requests as http_requests
+    from hashlib import md5
+
     target = os.path.abspath(target_path)
+
+    # GitHub 토큰 확인
+    github_token = os.environ.get("GITHUB_TOKEN")
+    if not github_token:
+        return json.dumps({
+            "status": "error",
+            "error": "GITHUB_TOKEN이 설정되지 않았습니다. .env 또는 MCP env에 추가하세요.",
+        }, ensure_ascii=False, indent=2)
 
     # 토론 결과에서 PR description 로드
     pr_body = _load_pr_description(target, feature_name)
@@ -345,11 +356,10 @@ def create_pr(
     slug = re.sub(r'[^a-zA-Z0-9\s-]', '', feature_name)
     slug = re.sub(r'[\s]+', '-', slug).strip('-').lower()
     if not slug:
-        slug = f"feature-{hash(feature_name) % 10000}"
+        slug = md5(feature_name.encode()).hexdigest()[:8]
     branch_name = f"feature/{slug}"
 
     try:
-        # PATH에 homebrew, nvm 등 추가 (MCP 환경에서 누락될 수 있음)
         env = os.environ.copy()
         extra_paths = [
             "/opt/homebrew/bin",
@@ -358,23 +368,39 @@ def create_pr(
         ]
         env["PATH"] = ":".join(extra_paths) + ":" + env.get("PATH", "")
 
-        cmds = [
+        # git remote에서 owner/repo 추출
+        owner, repo = _get_github_repo_info(target, env)
+        if not owner:
+            return json.dumps({
+                "status": "error",
+                "error": "GitHub remote URL을 파싱할 수 없습니다. git remote -v 를 확인하세요.",
+            }, ensure_ascii=False, indent=2)
+
+        # 이미 해당 브랜치가 있으면 삭제 후 재생성
+        _run_cmd(["git", "branch", "-D", branch_name], cwd=target, env=env, ignore_error=True)
+
+        # ── Step 1: git branch + add + commit + push ──
+        git_cmds = [
             ["git", "checkout", "-b", branch_name],
             ["git", "add", "."],
             ["git", "commit", "-m", f"feat: {feature_name} scaffold by brawl-and-build"],
-            ["git", "push", "-u", "origin", branch_name],
-            ["gh", "pr", "create",
-             "--title", f"feat: {feature_name}",
-             "--body", pr_body,
-             "--base", base_branch],
         ]
 
         results = []
-        for cmd in cmds:
-            proc = subprocess.run(
-                cmd, cwd=target, env=env,
-                capture_output=True, text=True, timeout=30,
-            )
+        for cmd in git_cmds:
+            try:
+                proc = subprocess.run(
+                    cmd, cwd=target, env=env,
+                    capture_output=True, text=True, timeout=60,
+                )
+            except FileNotFoundError as fnf:
+                return json.dumps({
+                    "status": "error",
+                    "step": " ".join(cmd),
+                    "error": f"명령어를 찾을 수 없습니다: {fnf}",
+                    "completed_steps": results,
+                }, ensure_ascii=False, indent=2)
+
             results.append({
                 "cmd": " ".join(cmd),
                 "returncode": proc.returncode,
@@ -382,7 +408,6 @@ def create_pr(
                 "stderr": proc.stderr.strip(),
             })
 
-            # "nothing to commit"은 에러가 아님 → skip
             if proc.returncode != 0:
                 if "nothing to commit" in proc.stdout:
                     results[-1]["skipped"] = True
@@ -394,15 +419,96 @@ def create_pr(
                     "completed_steps": results,
                 }, ensure_ascii=False, indent=2)
 
-        # PR URL 추출
-        pr_url = results[-1]["stdout"]
+        # ── Step 2: push (토큰을 URL에 포함하여 인증) ──
+        push_url = f"https://x-access-token:{github_token}@github.com/{owner}/{repo}.git"
+        push_cmd = ["git", "push", "-u", push_url, branch_name, "--force"]
+        try:
+            proc = subprocess.run(
+                push_cmd, cwd=target, env=env,
+                capture_output=True, text=True, timeout=60,
+            )
+        except FileNotFoundError as fnf:
+            return json.dumps({
+                "status": "error",
+                "step": "git push",
+                "error": str(fnf),
+            }, ensure_ascii=False, indent=2)
 
-        return json.dumps({
-            "status": "ok",
-            "branch": branch_name,
-            "pr_url": pr_url,
-            "steps": results,
-        }, ensure_ascii=False, indent=2)
+        # push 결과 (토큰 노출 방지)
+        results.append({
+            "cmd": f"git push -u origin {branch_name} --force",
+            "returncode": proc.returncode,
+            "stdout": proc.stdout.strip(),
+            "stderr": _sanitize_token(proc.stderr.strip(), github_token),
+        })
+
+        if proc.returncode != 0:
+            return json.dumps({
+                "status": "error",
+                "step": "git push",
+                "error": _sanitize_token(proc.stderr.strip(), github_token),
+                "completed_steps": results,
+            }, ensure_ascii=False, indent=2)
+
+        # ── Step 3: GitHub REST API로 PR 생성 ──
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+        headers = {
+            "Authorization": f"token {github_token}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+        pr_data = {
+            "title": f"feat: {feature_name}",
+            "body": pr_body,
+            "head": branch_name,
+            "base": base_branch,
+        }
+
+        resp = http_requests.post(api_url, json=pr_data, headers=headers, timeout=30)
+
+        if resp.status_code == 201:
+            pr_info = resp.json()
+            pr_url = pr_info["html_url"]
+            results.append({
+                "cmd": f"GitHub API: POST {api_url}",
+                "status": "created",
+                "pr_url": pr_url,
+            })
+            return json.dumps({
+                "status": "ok",
+                "branch": branch_name,
+                "pr_url": pr_url,
+                "pr_number": pr_info["number"],
+                "steps": results,
+            }, ensure_ascii=False, indent=2)
+        elif resp.status_code == 422:
+            # PR이 이미 존재하는 경우
+            error_msg = resp.json().get("errors", [{}])[0].get("message", "")
+            if "already exists" in error_msg.lower() or "pull request already exists" in error_msg.lower():
+                results.append({
+                    "cmd": f"GitHub API: POST {api_url}",
+                    "status": "already_exists",
+                    "message": "PR이 이미 존재합니다.",
+                })
+                return json.dumps({
+                    "status": "ok",
+                    "branch": branch_name,
+                    "message": "PR이 이미 존재합니다. push는 완료되었습니다.",
+                    "steps": results,
+                }, ensure_ascii=False, indent=2)
+            else:
+                return json.dumps({
+                    "status": "error",
+                    "step": "PR 생성",
+                    "error": resp.json(),
+                    "completed_steps": results,
+                }, ensure_ascii=False, indent=2)
+        else:
+            return json.dumps({
+                "status": "error",
+                "step": "PR 생성",
+                "error": f"HTTP {resp.status_code}: {resp.text}",
+                "completed_steps": results,
+            }, ensure_ascii=False, indent=2)
 
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
@@ -448,6 +554,38 @@ def get_project_status(target_path: str) -> str:
 # ══════════════════════════════════════════
 #  헬퍼 함수
 # ══════════════════════════════════════════
+
+def _get_github_repo_info(target_path: str, env: dict) -> tuple[str, str]:
+    """git remote에서 owner/repo를 추출합니다."""
+    try:
+        proc = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=target_path, env=env,
+            capture_output=True, text=True, timeout=10,
+        )
+        url = proc.stdout.strip()
+        # https://github.com/owner/repo.git 또는 git@github.com:owner/repo.git
+        match = re.search(r'github\.com[:/]([^/]+)/([^/.]+)', url)
+        if match:
+            return match.group(1), match.group(2)
+    except Exception:
+        pass
+    return "", ""
+
+
+def _sanitize_token(text: str, token: str) -> str:
+    """출력에서 토큰을 마스킹합니다."""
+    return text.replace(token, "***")
+
+
+def _run_cmd(cmd, cwd=None, env=None, ignore_error=False):
+    """subprocess 헬퍼. ignore_error=True면 실패해도 무시."""
+    try:
+        proc = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=30)
+        return proc
+    except Exception:
+        return None
+
 
 def _load_pr_description(target_path: str, feature_name: str) -> str:
     """토론 결과를 PR description으로 변환합니다."""

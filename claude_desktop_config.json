@@ -6,7 +6,8 @@
         "/Users/rowdy/Documents/since/brawl-and-build/mcp_server.py"
       ],
       "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-your-key-here"
+        "ANTHROPIC_API_KEY": "sk-ant-your-key-here",
+        "GITHUB_TOKEN": "ghp_your-github-token-here"
       }
     }
   }
