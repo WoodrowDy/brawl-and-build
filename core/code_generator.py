@@ -19,7 +19,6 @@ import os
 import json
 import subprocess
 import shutil
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from core.state import DiscussionState
 from core.cost_tracker import get_tracker
@@ -117,14 +116,13 @@ API_SPEC_PROMPT = """당신은 PM이자 API 설계자입니다.
 
 def create_build_node(
     role: str,
+    llm,
     model: str = "claude-sonnet-4-20250514",
 ):
     """코드 생성 노드를 만듭니다.
 
     role: "be", "fe", "shared", "api_spec"
     """
-
-    llm = ChatAnthropic(model=model, max_tokens=4096)
 
     system_prompts = {
         "be": BE_CODE_PROMPT,
@@ -161,8 +159,16 @@ def create_build_node(
 - 프론트엔드: packages/frontend/src/
 - 공유: packages/shared/src/"""
 
+        system_blocks = [
+            {
+                "type": "text",
+                "text": system_prompts[role],
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+
         response = llm.invoke([
-            SystemMessage(content=system_prompts[role]),
+            SystemMessage(content=system_blocks),
             HumanMessage(content=prompt),
         ])
 
