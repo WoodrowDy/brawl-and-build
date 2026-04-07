@@ -156,18 +156,34 @@ PM 사회자로서 이번 라운드를 종합 정리하세요:
     return pm_moderator_node
 
 
-def _build_discussion_context(state: DiscussionState) -> str:
-    """이전 토론 내용을 읽기 좋은 텍스트로 변환합니다."""
+def _build_discussion_context(state: DiscussionState) -> tuple[str, int]:
+    """Append-only builder for the discussion-context string.
+
+    Returns (cache, new_len) so the calling node can propagate both back into
+    LangGraph state. This makes the builder O(n) over the run instead of O(n²)
+    because previously-formatted entries are reused verbatim.
+
+    Round headers are emitted whenever the round number changes between the
+    last cached entry and the next new entry.
+    """
     log = state.get("discussion_log", [])
-    if not log:
-        return ""
+    cached_len = state.get("context_cache_len", 0) or 0
+    cache = state.get("context_cache", "") or ""
 
-    lines = []
-    current_round = None
-    for entry in log:
-        if entry["round"] != current_round:
-            current_round = entry["round"]
-            lines.append(f"\n### 라운드 {current_round}")
-        lines.append(f"**[{entry['role']}]**: {entry['content']}")
+    if len(log) <= cached_len:
+        return cache, cached_len
 
-    return "\n".join(lines)
+    # Determine the round at the tail of the cached portion so we know whether
+    # the next new entry needs a fresh round header.
+    last_round = log[cached_len - 1]["round"] if cached_len > 0 else None
+
+    new_lines: list[str] = []
+    for entry in log[cached_len:]:
+        if entry["round"] != last_round:
+            last_round = entry["round"]
+            new_lines.append(f"\n### 라운드 {last_round}")
+        new_lines.append(f"**[{entry['role']}]**: {entry['content']}")
+
+    appended = "\n".join(new_lines)
+    cache = f"{cache}\n{appended}" if cache else appended
+    return cache, len(log)
