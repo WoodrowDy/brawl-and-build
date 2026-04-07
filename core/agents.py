@@ -62,11 +62,18 @@ def create_agent_node(role: RoleConfig, llm, model: str = "claude-sonnet-4-20250
         }
         updated_log = state.get("discussion_log", []) + [new_entry]
 
+        # Extend the cache to include the entry just appended by this node so
+        # that context_cache_len always equals len(discussion_log) in the
+        # returned state.
+        updated_cache, updated_cache_len = _extend_cache(
+            discussion_context, new_cache_len, new_entry
+        )
+
         return {
             "discussion_log": updated_log,
             "messages": [response],
-            "context_cache": discussion_context,
-            "context_cache_len": new_cache_len,
+            "context_cache": updated_cache,
+            "context_cache_len": updated_cache_len,
         }
 
     return agent_node
@@ -152,11 +159,18 @@ PM 사회자로서 이번 라운드를 종합 정리하세요:
         }
         updated_log = state.get("discussion_log", []) + [new_entry]
 
+        # Extend the cache to include the entry just appended by this node so
+        # that context_cache_len always equals len(discussion_log) in the
+        # returned state.
+        updated_cache, updated_cache_len = _extend_cache(
+            discussion_context, new_cache_len, new_entry
+        )
+
         return {
             "discussion_log": updated_log,
             "messages": [response],
-            "context_cache": discussion_context,
-            "context_cache_len": new_cache_len,
+            "context_cache": updated_cache,
+            "context_cache_len": updated_cache_len,
         }
 
     return pm_moderator_node
@@ -191,6 +205,40 @@ def _build_discussion_context(state: DiscussionState) -> tuple[str, int]:
     appended = "\n".join(new_lines)
     cache = f"{cache}\n{appended}" if cache else appended
     return cache, len(log)
+
+
+def _extend_cache(cache: str, cache_len: int, new_entry: dict) -> tuple[str, int]:
+    """Append a single new entry to the already-built cache string.
+
+    Called after a node builds its response so that context_cache_len
+    always equals len(discussion_log) in the returned state patch.
+    """
+    last_round_in_cache: int | None = None
+    # Detect the round of the last entry in the existing cache so we know
+    # whether to emit a round header for the new entry.
+    # We track this via the entry that was *just* processed (cache_len items
+    # were in the log before this node ran, so the previous round is in the
+    # cache if cache_len > 0 — but we don't have the log here). We compare
+    # the new entry's round against what the cache already contains: if the
+    # cache is empty or the new round differs we emit a header.
+    # Simple heuristic: scan for the last "### 라운드" header in the cache.
+    if cache:
+        for line in reversed(cache.splitlines()):
+            if line.startswith("### 라운드 "):
+                try:
+                    last_round_in_cache = int(line.split("### 라운드 ")[1].strip())
+                except ValueError:
+                    pass
+                break
+
+    new_lines: list[str] = []
+    if new_entry["round"] != last_round_in_cache:
+        new_lines.append(f"\n### 라운드 {new_entry['round']}")
+    new_lines.append(f"**[{new_entry['role']}]**: {new_entry['content']}")
+
+    appended = "\n".join(new_lines)
+    updated_cache = f"{cache}\n{appended}" if cache else appended
+    return updated_cache, cache_len + 1
 
 
 def _cached_system_blocks(role_system_prompt: str, project_meta: str) -> list[dict]:
