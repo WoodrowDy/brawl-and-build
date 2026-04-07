@@ -1,7 +1,6 @@
 """토론 결과 정리 에이전트."""
 
 import json
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from core.state import DiscussionState
 from core.cost_tracker import get_tracker
@@ -24,10 +23,8 @@ SUMMARIZER_SYSTEM_PROMPT = """당신은 프로젝트 토론 내용을 정리하�
 ```"""
 
 
-def create_summarizer_node(model: str = "claude-haiku-4-5-20251001"):
+def create_summarizer_node(llm, model: str = "claude-haiku-4-5-20251001"):
     """토론 결과를 정리하는 요약 노드를 생성합니다."""
-
-    llm = ChatAnthropic(model=model, max_tokens=2048)
 
     def summarizer_node(state: DiscussionState) -> dict:
         discussion_text = _format_discussion_log(state)
@@ -40,8 +37,16 @@ def create_summarizer_node(model: str = "claude-haiku-4-5-20251001"):
 
 위 토론 내용을 분석하여 결정사항, 미해결과제, 요약을 JSON 형식으로 정리하세요."""
 
+        system_blocks = [
+            {
+                "type": "text",
+                "text": SUMMARIZER_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+
         response = llm.invoke([
-            SystemMessage(content=SUMMARIZER_SYSTEM_PROMPT),
+            SystemMessage(content=system_blocks),
             HumanMessage(content=prompt),
         ])
 

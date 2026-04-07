@@ -33,6 +33,10 @@ class DiscussionState(TypedDict):
     # 이전 토론 컨텍스트 (기능 체이닝)
     previous_context: str
 
+    # Phase B: incremental discussion-context cache (O(n²) → O(n))
+    context_cache: str
+    context_cache_len: int
+
     # Build 페이즈
     build_enabled: bool
     build_outputs: list[dict]  # [{role, content}, ...]
